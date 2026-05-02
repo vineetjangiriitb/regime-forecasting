@@ -10,3 +10,10 @@ ENV/
 env.bak/
 venv.bak/
 .ipynb_checkpoints/
+
+# PyTorch Lightning training artifacts
+lightning_logs/
+checkpoints/
+**/lightning_logs/
+**/checkpoints/
+*.DS_Store
