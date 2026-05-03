@@ -91,16 +91,60 @@ def build_global_tft(training_dataset: TimeSeriesDataSet, config: dict) -> Tempo
     )
 
 
-def build_separate_tft(train_df, regime_labels, config: dict):
-    """Build one TFT per regime (TFT-Separate variant)."""
-    raise NotImplementedError("Phase 5")
+def prepare_tft_dataframe_with_regime(df: pd.DataFrame) -> pd.DataFrame:
+    """Same as prepare_tft_dataframe but keeps regime_label as a string categorical column."""
+    out = prepare_tft_dataframe(df)
+    out["regime"] = out["regime_label"].astype(int).astype(str)
+    return out
 
 
-def build_conditioned_tft(train_df, regime_labels, config: dict):
-    """Build single TFT with regime label as static covariate (TFT-Conditioned)."""
-    raise NotImplementedError("Phase 5")
+def build_conditioned_tft_dataset(df: pd.DataFrame, config: dict, training_cutoff: int = None) -> TimeSeriesDataSet:
+    """Build TimeSeriesDataSet with regime as time-varying known categorical (TFT-Conditioned)."""
+    if training_cutoff is None:
+        training_cutoff = df["time_idx"].max()
+
+    return TimeSeriesDataSet(
+        df[df["time_idx"] <= training_cutoff],
+        time_idx="time_idx",
+        target="sp500_return",
+        group_ids=["group_id"],
+        min_encoder_length=config["max_encoder_length"],
+        max_encoder_length=config["max_encoder_length"],
+        min_prediction_length=config["max_prediction_length"],
+        max_prediction_length=config["max_prediction_length"],
+        static_categoricals=["group_id"],
+        time_varying_known_categoricals=["regime"],
+        time_varying_known_reals=[
+            "time_idx", "dow_sin", "dow_cos", "month_sin", "month_cos",
+            "fed_funds_lag1", "yield_spread_lag1",
+        ],
+        time_varying_unknown_reals=["sp500_return", "vix"],
+        target_normalizer=GroupNormalizer(groups=["group_id"], transformation=None),
+        add_relative_time_idx=True,
+        add_target_scales=True,
+        add_encoder_length=True,
+        allow_missing_timesteps=False,
+    )
 
 
-def build_ensemble_tft(train_df, regime_probs, config: dict):
-    """Build soft-routing ensemble using HMM regime probabilities (TFT-Ensemble)."""
-    raise NotImplementedError("Phase 5")
+def get_regime_indices(dataset: TimeSeriesDataSet, df: pd.DataFrame, target_regime: int) -> list:
+    """Return indices into a TimeSeriesDataSet where the prediction-day's regime equals target_regime.
+
+    pytorch-forecasting's `dataset.index` exposes `time` (encoder-start time_idx) and
+    `sequence_length`. The prediction day's time_idx = time + sequence_length - max_prediction_length.
+    """
+    regime_at_t = df.set_index("time_idx")["regime_label"].to_dict()
+    idx = dataset.index
+    pred_times = (idx["time"] + idx["sequence_length"] - dataset.max_prediction_length).values
+    return [i for i, t in enumerate(pred_times) if regime_at_t.get(int(t)) == target_regime]
+
+
+def hmm_posteriors_for_dates(hmm_model, scaler, df: pd.DataFrame, dates) -> np.ndarray:
+    """Return [n_dates, K] HMM posteriors for the given dates using fitted HMM + scaler.
+
+    Features (vol, yield_spread, vix) are computed from `df` on `dates` and standardized
+    by the fitted train-only scaler. No refitting — this is anti-lookahead-safe.
+    """
+    feats = df.loc[dates, ["realized_vol_20d", "yield_spread", "vix"]].values
+    X = scaler.transform(feats)
+    return hmm_model.predict_proba(X)
